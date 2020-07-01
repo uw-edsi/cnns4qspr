@@ -14,7 +14,6 @@ import os
 import sys
 import torch
 import numpy as np
-import pandas as pd
 
 from biopandas.pdb import PandasPdb
 from biopandas.mol2 import PandasMol2
@@ -29,18 +28,16 @@ from itertools import combinations
 from silx.io.dictdump import dicttoh5
 import h5py
 import click
-import shutil
-from timeit import default_timer as timer
+
 
 # In[4]:
 
 
 device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
-#device_type = 'cpu'
-print(device_type)
+device_type
+
 
 # In[5]:
-print(torch.cuda.device_count())
 
 
 def load_pdb(path):
@@ -126,6 +123,7 @@ def load_input(path, ligand=False):
             the pdb file: num_atoms, atom_types, positions, atom_type_set,
             xcoords, ycoords, zcoords, residues, residue_set
     """
+    
     file_type = path.split('.')[-1]
     
     if file_type == 'pdb':
@@ -137,8 +135,7 @@ def load_input(path, ligand=False):
         raise ValueError('Need a pdb or mol2 file')
     # atomic coordinates
     if ligand == True:
-        #ligand_file = path.split('_')[:-1][0] + '_ligand.mol2'
-        ligand_file = path.replace('pocket', 'ligand')
+        ligand_file = path.split('_')[:-1][0] + '_ligand.mol2'
         ligand_dict = load_mol2(ligand_file)
         mid_points = shift_coords(protein_dict, lig_dict=ligand_dict)
         #mid_points = shift_coords(ligand_dict, lig_dict=None)
@@ -201,6 +198,14 @@ def shift_coords(pro_dict, lig_dict=None):
 # In[6]:
 
 
+pro_dict = load_input('1a1e_pocket.pdb', ligand=True)
+
+
+# In[7]:
+
+
+path = '1a1e_ligand.mol2'
+path.split('_')[:-1][0]
 
 
 # In[8]:
@@ -216,10 +221,10 @@ def grid_positions(grid_array):
     Returns:
         array: meshgrid array of the x, y and z positions.
     """
-    x_grid = grid_array.view(-1, 1, 1).repeat(1, len(grid_array), len(grid_array))
-    y_grid = grid_array.view(1, -1, 1).repeat(len(grid_array), 1, len(grid_array))
-    z_grid = grid_array.view(1, 1, -1).repeat(len(grid_array), len(grid_array), 1)
-    return (x_grid, y_grid, z_grid)
+    xgrid = grid_array.view(-1, 1, 1).repeat(1, len(grid_array), len(grid_array))
+    ygrid = grid_array.view(1, -1, 1).repeat(len(grid_array), 1, len(grid_array))
+    zgrid = grid_array.view(1, 1, -1).repeat(len(grid_array), len(grid_array), 1)
+    return (xgrid, ygrid, zgrid)
 
 def norm_properties(prop, channel):
     
@@ -292,7 +297,6 @@ def make_fields(protein_dict, channels, bin_size, num_bins, ligand_dict=None, li
     # These cubes will be flattened, then used as a reference coordinate system
     # to place the actual channel densities into
     xgrid, ygrid, zgrid = grid_positions(grid_1d)
-    del grid_1d
 
     for channel_index, channel in enumerate(channels):
         #print(channel)
@@ -333,7 +337,7 @@ def make_fields(protein_dict, channels, bin_size, num_bins, ligand_dict=None, li
 
         atom_positions = torch.FloatTensor(atom_positions).to(device_type)
         
-        
+
         # xgrid.view(-1, 1) is 125,000 long, because it's viewing a 50x50x50 cube in one column
         # then you repeat that column horizontally for each atom
         xx_xx = xgrid.view(-1, 1).repeat(1, len(atom_positions))
@@ -381,8 +385,6 @@ def make_fields(protein_dict, channels, bin_size, num_bins, ligand_dict=None, li
                               + ((zz_zz - posz_posz)**2) * normalized_prop) / (2 * (sigma)**2)
                               )
         
-            del normalized_prop
-
         else:
             density = torch.exp(-((xx_xx - posx_posx)**2
                             + (yy_yy - posy_posy)**2
@@ -394,13 +396,6 @@ def make_fields(protein_dict, channels, bin_size, num_bins, ligand_dict=None, li
 
         # Sum densities and reshape to original shape
         sum_densities = torch.sum(density, dim=1).view(xgrid.shape)
-        #del xgrid
-        #del ygrid
-        del atom_positions
-        #del zgrid 
-        del density
-        del sigma
-        del xx_xx, yy_yy, zz_zz
         #print(sum_densities.shape)
 
         # set all nans to 0
@@ -411,14 +406,11 @@ def make_fields(protein_dict, channels, bin_size, num_bins, ligand_dict=None, li
         # sum_densities = sum_densities.unsqueeze(0)
 
         #fields[atom_type_index] = sum_densities
-        fields[channel] = sum_densities.cpu().numpy()
-        del sum_densities
+        fields[channel] = sum_densities.numpy()
+
 #     if return_bins:
 #         return fields, num_bins
 #     else:
-    del xgrid
-    del ygrid
-    del zgrid
     return fields
 
 def check_channel(channel, filter_set):
@@ -622,16 +614,20 @@ def voxelize(path, channels=['CA'], path_type='file', ligand=False, bin_size=2.0
 # In[9]:
 
 
+file_name = '1a1e_pocket.mol2'
+myprotein_dict = load_input(file_name, ligand=True)
+myprotein_dict[0]
+
+
 # In[10]:
 
 
-channel_list = ['all_C', 'all_O', 'all_N', 'acidic', 'basic', 'polar', 'nonpolar',\
-                 'charged', 'amphipathic','hydrophobic', 'aromatic', 'acceptor', 'donor',\
-                 'ring', 'hyb', 'heavyvalence', 'heterovalence', 'partialcharge','protein', 'ligand']
-
-#channel_list = ['all_O', 'all_C', 'acceptor']
+# channel_list = ['all_C', 'all_O', 'all_N', 'acidic', 'basic', 'polar', 'nonpolar',\
+#                 'charged', 'amphipathic','hydrophobic', 'aromatic', 'acceptor', 'donor',\
+#                 'ring', 'hyb', 'heavyvalence', 'heterovalence', 'partialcharge','protein', 'ligand']
+channel_list = ['all_O', 'all_C']
 #other_filters = np.array(['backbone', 'sidechains'])
-#voxel = voxelize(file_name, channels=channel_list, bin_size=2.0,num_bins=50, ligand=True)
+voxel = voxelize(file_name, channels=channel_list, bin_size=2.0,num_bins=50, ligand=True)
 
 
 # In[ ]:
@@ -640,59 +636,16 @@ channel_list = ['all_C', 'all_O', 'all_N', 'acidic', 'basic', 'polar', 'nonpolar
 @click.command()
 @click.option('--input_dir', help='input directory to search for pocket.mol2 files')
 @click.option('--output_dir', help='output directory to save the computed data')
-@click.option('--affinity_data', default=None, help='output directory to save the computed data')
-
-
-# In[41]:
-
-
-#input_dir = '/Users/prguser/Documents/PDBbind/test-set/'
-#output_dir = '/Users/prguser/Documents/PDBbind/test_output/'
-#subdir_name = os.listdir(input_dir)
-
-def run(input_dir, output_dir, affinity_data):
-    subdir_name = os.listdir(input_dir)
-    start_tot = timer() 
-    create_ds_args = {'compression': "lzf",
-                  'shuffle': True,
-                  'fletcher32': True}
-    if affinity_data:
-        affinity = pd.read_csv(affinity_data)
-    #print(input_dir)
-    for j, dirname in enumerate(subdir_name):
-        start = timer()
-        torch.cuda.empty_cache() 
-        if j % 10 == 0:
-            progress = '{}/{} structures voxelized ({}%)'.format(j, len(subdir_name), \
-                        round(j / len(subdir_name) * 100, 2))
-            print('\r'+progress)
-            #sys.stdout.write('\r'+progress)
-        input_filename = input_dir + dirname + '/' + dirname + '_pocket.mol2'
-        output_filename = os.path.join(output_dir, dirname + '.h5') 
-        if not os.path.isfile(output_filename):
-            #print(output_filename)
-            voxel = voxelize(input_filename, channels=channel_list, bin_size=2.0,num_bins=50, ligand=True)
-            #print(voxel)
-            if affinity_data:
-                if dirname in affinity.values:
-                    affinity_value = affinity.loc[affinity['pdbid'] == dirname, '-logKd/Ki'].iloc[0]
-                    voxel['affinity'] = affinity_value
-                else:
-                    voxel['affinity'] = NULL
-            else:
-                continue
-            dicttoh5(voxel, dirname + ".h5", h5path='/', overwrite_data=True,
-                     create_dataset_args=create_ds_args)
-            shutil.move(dirname + '.h5', output_dir)
+def run(input_dir, output_dir):
+    """runs the tool over all pdbs in a directory"""
+    for input_filename in os.listdir(input_dir):
+        output_filename = os.path.join(output_dir, input_filename + '.csv')
+        if input_filename.endswith(".pdb") and not os.file.exists(output_filename):
+            do_all_the_work(input_filename, output_filename)
         else:
             continue
-        end = timer()
-        #print(end - start)
-    
-    end_tot = timer()
-    print(end_tot - start_tot)
     return
 
-if __name__ == '__main__':
-    run()
+
+# In[52]:
 
