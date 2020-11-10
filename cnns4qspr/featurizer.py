@@ -31,9 +31,9 @@ import h5py
 import click
 import shutil
 from timeit import default_timer as timer
-
+from rotation import EllipsoidTool
 # In[4]:
-
+STD = 0.3455
 
 device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
 #device_type = 'cpu'
@@ -41,7 +41,6 @@ print(device_type)
 
 # In[5]:
 print(torch.cuda.device_count())
-
 
 def load_pdb(path):
 
@@ -77,9 +76,11 @@ def load_mol2(path):
     smarts_notation = next(pybel.readfile('mol2', path))
     
     pro_dict = generate_dict(x_coords, y_coords, z_coords, atom_types, residue_names)
+    heavy_pos = heavy_atom_positions(x_coords, y_coords, z_coords, atom_types)
 
     pro_dict['charge'] = partial_charge
     pro_dict['smarts'] = smarts_notation
+    pro_dict['heavy_atom_positions'] = heavy_pos
 
     # add a value to the dictionary, which is all of the atomic coordinates just
     # shifted to the origin
@@ -113,6 +114,19 @@ def generate_dict(x, y, z, a_types, res_names):
     
     return pro_dict
 
+def heavy_atom_positions(x, y, z, a_types):
+    
+    positions = []
+    for i, xi in enumerate(x):
+        if a_types[i].startswith('H'):
+            pass
+        else:
+            position_tuple = (x[i], y[i], z[i])
+            positions.append(position_tuple)
+    positions = np.array(positions)
+    
+    return positions
+
 
 def load_input(path, ligand=False):
     """
@@ -126,6 +140,7 @@ def load_input(path, ligand=False):
             the pdb file: num_atoms, atom_types, positions, atom_type_set,
             xcoords, ycoords, zcoords, residues, residue_set
     """
+    
     file_type = path.split('.')[-1]
     
     if file_type == 'pdb':
@@ -137,8 +152,7 @@ def load_input(path, ligand=False):
         raise ValueError('Need a pdb or mol2 file')
     # atomic coordinates
     if ligand == True:
-        #ligand_file = path.split('_')[:-1][0] + '_ligand.mol2'
-        ligand_file = path.replace('pocket', 'ligand')
+        ligand_file = path.split('_')[:-1][0] + '_ligand.mol2'
         ligand_dict = load_mol2(ligand_file)
         mid_points = shift_coords(protein_dict, lig_dict=ligand_dict)
         #mid_points = shift_coords(ligand_dict, lig_dict=None)
@@ -181,10 +195,11 @@ def shift_coords(pro_dict, lig_dict=None):
     if lig_dict:
         x_pro, y_pro, z_pro = get_extreme_values(pro_dict)
         x_lig, y_lig, z_lig = get_extreme_values(lig_dict)
+        x_extremes, y_extremes, z_extremes = get_extreme_values(lig_dict)
         
-        x_extremes = np.array([np.min(np.concatenate([x_pro, x_lig])), np.max(np.concatenate([x_pro, x_lig]))])
-        y_extremes = np.array([np.min(np.concatenate([y_pro, y_lig])), np.max(np.concatenate([y_pro, y_lig]))])
-        z_extremes = np.array([np.min(np.concatenate([z_pro, z_lig])), np.max(np.concatenate([z_pro, z_lig]))])
+#         x_extremes = np.array([np.min(np.concatenate([x_pro, x_lig])), np.max(np.concatenate([x_pro, x_lig]))])
+#         y_extremes = np.array([np.min(np.concatenate([y_pro, y_lig])), np.max(np.concatenate([y_pro, y_lig]))])
+#         z_extremes = np.array([np.min(np.concatenate([z_pro, z_lig])), np.max(np.concatenate([z_pro, z_lig]))])
         
         #x_val = np.concatenate(x_pro, x_lig)
         #print(x_extremes)
@@ -197,15 +212,6 @@ def shift_coords(pro_dict, lig_dict=None):
 
     return midpoints
 
-
-# In[6]:
-
-
-
-
-# In[8]:
-
-
 def grid_positions(grid_array):
     """
     This function returns the 3D meshgrids of x, y and z positions.
@@ -216,35 +222,57 @@ def grid_positions(grid_array):
     Returns:
         array: meshgrid array of the x, y and z positions.
     """
-    x_grid = grid_array.view(-1, 1, 1).repeat(1, len(grid_array), len(grid_array))
-    y_grid = grid_array.view(1, -1, 1).repeat(len(grid_array), 1, len(grid_array))
-    z_grid = grid_array.view(1, 1, -1).repeat(len(grid_array), len(grid_array), 1)
-    return (x_grid, y_grid, z_grid)
+    xgrid = grid_array.view(-1, 1, 1).repeat(1, len(grid_array), len(grid_array))
+    ygrid = grid_array.view(1, -1, 1).repeat(len(grid_array), 1, len(grid_array))
+    zgrid = grid_array.view(1, 1, -1).repeat(len(grid_array), len(grid_array), 1)
+    return (xgrid, ygrid, zgrid)
 
-def norm_properties(prop, channel):
-    
-    if channel == 'hyb':
-        max_prop = 3
-        min_prop = 0
-    elif channel == 'heterovalence':
-        max_prop = 4
-        min_prop = 0
-    elif channel == 'heavyvalence':
-        max_prop = 4
-        min_prop = 0
-    else:
-        max_prop = 2.276
-        min_prop = -1.167
-        # clamping the charge value within a range
-        # the range is chosen from ligand data
-        prop[prop > 2.276] = 2.276
-        prop[prop < -1.166] = -1.167
-    
-    norm_prop = (prop-min_prop)/(max_prop-min_prop)
-    
-    return norm_prop
+# def norm_properties(prop, channel):
 
-def make_fields(protein_dict, channels, bin_size, num_bins, ligand_dict=None, ligand=False):
+#     if channel == 'hyb':
+#         max_prop = 3
+#         min_prop = 0
+#     elif channel == 'heterovalence':
+#         max_prop = 4
+#         min_prop = 0
+#     elif channel == 'heavyvalence':
+#         max_prop = 4
+#         min_prop = 0
+#     else:
+#         max_prop = 2.276
+#         min_prop = -1.167
+#         # clamping the charge value within a range
+#         # the range is chosen from ligand data
+#         prop[prop > 2.276] = 2.276
+#         prop[prop < -1.166] = -1.167
+
+#     norm_prop = (prop-min_prop)/(max_prop-min_prop)
+
+#     return norm_prop
+
+def get_prop_values(prop_name, pro_dict, lig_dict=None, channel='hyb'):
+
+
+    prop = []
+    for atom in pro_dict['smarts']:
+
+#atom.__getattribute__(prop)
+        prop.append(atom.__getattribute__(prop_name[np.int(np.where(prop_name == channel)[0])]))
+
+    if lig_dict:
+        for atom in lig_dict['smarts']:
+#atom.__getattribute__(prop)
+            prop.append(atom.__getattribute__(prop_name[np.int(np.where(prop_name == channel)[0])]))
+
+    prop = np.array(prop)
+    if channel == 'partialcharge':
+        prop = np.where(prop < 5, prop, 5)
+        prop = prop / STD
+
+    return prop
+
+
+def make_fields(protein_dict, channels, bin_size, num_bins, ligand_dict=None, ligand=False, feature_type='nearest'):
     """
     This function takes a protein dict (from load_input function) and outputs a
         large tensor containing many atomic "fields" for the protein.
@@ -267,7 +295,8 @@ def make_fields(protein_dict, channels, bin_size, num_bins, ligand_dict=None, li
     residue_filters = protein_dict['residue_set']
     atom_filters = protein_dict['atom_type_set']
     general_filters = ['all_C', 'all_O', 'all_N']
-    residue_property_filters = np.array(['acidic', 'basic', 'polar', 'nonpolar',                                         'charged', 'amphipathic'])
+    residue_property_filters = np.array(['acidic', 'basic', 'polar', 'nonpolar',\
+                                         'charged', 'amphipathic'])
     smart_filters = np.array(['hydrophobic', 'aromatic', 'acceptor', 'donor',
                              'ring'])
     named_prop = np.array(['hyb', 'heavyvalence', 'heterovalence', 'partialcharge'])
@@ -275,7 +304,10 @@ def make_fields(protein_dict, channels, bin_size, num_bins, ligand_dict=None, li
     other_filters = np.array(['backbone', 'sidechains'])
 
     # consolidate into one set of filters
-    filter_set = {'atom':atom_filters, 'residue':residue_filters,                  'residue_property':residue_property_filters,                   'smarts_property':smart_filters,                   'atom_property': named_prop, 'general': general_filters,
+    filter_set = {'atom':atom_filters, 'residue':residue_filters,\
+                  'residue_property':residue_property_filters, \
+                  'smarts_property':smart_filters, \
+                  'atom_property': named_prop, 'general': general_filters,
                   'protein_ligand': protein_ligand_filters, 'other':other_filters}
 
     # construct a single empty field, then initialize a dictionary with one
@@ -292,7 +324,7 @@ def make_fields(protein_dict, channels, bin_size, num_bins, ligand_dict=None, li
     # These cubes will be flattened, then used as a reference coordinate system
     # to place the actual channel densities into
     xgrid, ygrid, zgrid = grid_positions(grid_1d)
-    del grid_1d
+    print(xgrid.shape)
 
     for channel_index, channel in enumerate(channels):
         #print(channel)
@@ -311,14 +343,14 @@ def make_fields(protein_dict, channels, bin_size, num_bins, ligand_dict=None, li
         # Extract positions of atoms that are part of the current channel
 
         atom_positions_protein = find_channel_atoms(channel, protein_dict, filter_set)
-        
-        
+
+
         if ligand == True:
             atom_positions_ligand = find_channel_atoms(channel, ligand_dict, filter_set)
-            
+
             if channel == 'protein':
                     atom_positions = atom_positions_protein
-        
+
             elif channel == 'ligand':
                     atom_positions = atom_positions_ligand
             else:
@@ -327,98 +359,89 @@ def make_fields(protein_dict, channels, bin_size, num_bins, ligand_dict=None, li
         else:
             atom_positions = atom_positions_protein
         #print(atom_positions.shape)
-            
-        
-        #print('This is channel ', atom_positions)
 
         atom_positions = torch.FloatTensor(atom_positions).to(device_type)
-        
-        
+
+        if channel in named_prop:
+            if ligand == True:
+                prop = get_prop_values(named_prop, protein_dict, ligand_dict, channel=channel)
+            else:
+                prop = get_prop_values(named_prop, protein_dict, channel=channel)
+        else:
+            prop = np.ones((atom_positions.shape)[0])
+
+        if feature_type == 'nearest':
+
+            atom_positions = np.array(atom_positions).reshape(len(atom_positions), 3)
+            prop = np.array(prop).reshape(len(atom_positions))
+            voxel = make_voxel_grids(atom_positions, prop, bin_size, num_bins)
+
+
+
         # xgrid.view(-1, 1) is 125,000 long, because it's viewing a 50x50x50 cube in one column
         # then you repeat that column horizontally for each atom
-        xx_xx = xgrid.view(-1, 1).repeat(1, len(atom_positions))
-        yy_yy = ygrid.view(-1, 1).repeat(1, len(atom_positions))
-        zz_zz = zgrid.view(-1, 1).repeat(1, len(atom_positions))
-        
+#         xx_xx = xgrid.view(-1, 1).repeat(1, len(atom_positions))
+#         yy_yy = ygrid.view(-1, 1).repeat(1, len(atom_positions))
+#         zz_zz = zgrid.view(-1, 1).repeat(1, len(atom_positions))
+
         # at this point we've created 3 arrays that are 125,000 long
         # and as wide as the number of atoms that are the current channel type
         # these 3 arrays just contain the flattened x,y,z positions of our 50x50x50 box
 
 
         # now do the same thing as above, just with the ACTUAL atomic position data
-        posx_posx = atom_positions[:, 0].contiguous().view(1, -1).repeat(len(xgrid.view(-1)), 1)
-        #print(xx_xx[0].shape)
-        posy_posy = atom_positions[:, 1].contiguous().view(1, -1).repeat(len(ygrid.view(-1)), 1)
-        posz_posz = atom_positions[:, 2].contiguous().view(1, -1).repeat(len(zgrid.view(-1)), 1)
-        # three tensors of the same size, with actual atomic coordinates
+#         posx_posx = atom_positions[:, 0].contiguous().view(1, -1).repeat(len(xgrid.view(-1)), 1)
+#         #print(xx_xx[0].shape)
+#         posy_posy = atom_positions[:, 1].contiguous().view(1, -1).repeat(len(ygrid.view(-1)), 1)
+#         posz_posz = atom_positions[:, 2].contiguous().view(1, -1).repeat(len(zgrid.view(-1)), 1)
+#         # three tensors of the same size, with actual atomic coordinates
 
-        # normalizes the atomic positions with respect to the center of the box
-        # and calculates density of atoms in each voxel
-        
-        bin_size = torch.tensor(float(bin_size)).to(device_type)
-        sigma = 0.5*bin_size
+#         # normalizes the atomic positions with respect to the center of the box
+#         # and calculates density of atoms in each voxel
 
-        
-        if channel in named_prop:
-            prop = []
-            for atom in protein_dict['smarts']:
-    #atom.__getattribute__(prop)
-                prop.append(atom.__getattribute__(named_prop[np.int(np.where(named_prop == channel)[0])]))
-            
-            if ligand == True:
-                for atom in ligand_dict['smarts']:
-    #atom.__getattribute__(prop)
-                    prop.append(atom.__getattribute__(named_prop[np.int(np.where(named_prop == channel)[0])]))
-                
-            prop = np.array(prop)
+#         bin_size = torch.tensor(float(bin_size)).to(device_type)
+#         sigma = 0.5*bin_size
 
-            normalized_prop =  norm_properties(prop, channel)
-            normalized_prop =  torch.FloatTensor(normalized_prop).to(device_type)
+
+
+
+#             normalized_prop =  norm_properties(prop, channel)
+#             normalized_prop =  torch.FloatTensor(normalized_prop).to(device_type)
             #print(normalized_prop)
-            
-            density = torch.exp(-(((xx_xx - posx_posx)**2) * normalized_prop
-                              + ((yy_yy - posy_posy)**2) * normalized_prop
-                              + ((zz_zz - posz_posz)**2) * normalized_prop) / (2 * (sigma)**2)
-                              )
-        
-            del normalized_prop
+#         if channel in named_prop:
+#             density = torch.exp(-(((xx_xx - posx_posx)**2)
+#                               + ((yy_yy - posy_posy)**2)
+#                               + ((zz_zz - posz_posz)**2)) / (2 * (sigma)**2)
+#                               )
 
-        else:
-            density = torch.exp(-((xx_xx - posx_posx)**2
-                            + (yy_yy - posy_posy)**2
-                            + (zz_zz - posz_posz)**2) / (2 * (sigma)**2))
-        #print(density.shape)
+#         else:
+#             density = torch.exp(-((xx_xx - posx_posx)**2
+#                             + (yy_yy - posy_posy)**2
+#                             + (zz_zz - posz_posz)**2) / (2 * (sigma)**2))
+#         print(density.shape)
 
-        # Normalize so each atom density sums to one
-        density /= torch.sum(density, dim=0)
+#         # Normalize so each atom density sums to one
+#         density /= torch.sum(density, dim=0)
 
-        # Sum densities and reshape to original shape
-        sum_densities = torch.sum(density, dim=1).view(xgrid.shape)
-        #del xgrid
-        #del ygrid
-        del atom_positions
-        #del zgrid 
-        del density
-        del sigma
-        del xx_xx, yy_yy, zz_zz
-        #print(sum_densities.shape)
+#         # Sum densities and reshape to original shape
+#         sum_densities = torch.sum(density, dim=1).view(xgrid.shape)
+#         print("density={}" .format(str(sum_densities.shape)))
 
-        # set all nans to 0
-        sum_densities[sum_densities != sum_densities] = 0
+#         # set all nans to 0
+#         sum_densities[sum_densities != sum_densities] = 0
 
-        # add two empty dimmensions to make it 1x1x50x50x50, needed for CNN
-        # sum_densities = sum_densities.unsqueeze(0)
-        # sum_densities = sum_densities.unsqueeze(0)
+#         # add two empty dimmensions to make it 1x1x50x50x50, needed for CNN
+#         # sum_densities = sum_densities.unsqueeze(0)
+#         # sum_densities = sum_densities.unsqueeze(0)
 
-        #fields[atom_type_index] = sum_densities
-        fields[channel] = sum_densities.cpu().numpy()
-        del sum_densities
+#         #fields[atom_type_index] = sum_densities
+        fields[channel] = voxel
+
+        print("fields={}" .format(str(fields[channel].shape)))
+
 #     if return_bins:
 #         return fields, num_bins
 #     else:
-    del xgrid
-    del ygrid
-    del zgrid
     return fields
 
 def check_channel(channel, filter_set):
@@ -453,16 +476,17 @@ def find_channel_atoms(channel, protein_dict, filter_set):
             to the channel
     """
     if channel in filter_set['atom']:
-        atom_positions = protein_dict['shifted_positions'][protein_dict['atom_types'] == channel]
-    
-    
+        atom_positions = protein_dict['positions'][protein_dict['atom_types'] == channel]
+
+
     elif channel in filter_set['general']:
         atom_dict = {'all_C' :'C', 'all_O' : 'O', 'all_N' : 'N'}
-        atom_positions = protein_dict['shifted_positions']                        [[a.startswith(atom_dict[channel], 0) for a in protein_dict['atom_types']]]
+        atom_positions = protein_dict['positions']\
+                        [[a.startswith(atom_dict[channel], 0) for a in protein_dict['atom_types']]]
 
     elif channel in filter_set['residue']:
-        atom_positions = protein_dict['shifted_positions'][protein_dict['residues'] == channel]
-        
+        atom_positions = protein_dict['positions'][protein_dict['residues'] == channel]
+
     elif channel in filter_set['smarts_property']:
         smarts_list = [
                 '[#6+0!$(*~[#7,#8,F]),SH0+0v2,s+0,S^3,Cl+0,Br+0,I+0]',
@@ -476,13 +500,13 @@ def find_channel_atoms(channel, protein_dict, filter_set):
         atoms_smart = np.array(list(*zip(*pattern.findall(protein_dict['smarts']))),
                                     dtype=int) - 1
         #print(atoms_smart)
-        atom_positions = protein_dict['shifted_positions'][atoms_smart]
-    
+        atom_positions = protein_dict['positions'][atoms_smart]
+
     elif channel in filter_set['atom_property']:
-        atom_positions = protein_dict['shifted_positions']
-        
+        atom_positions = protein_dict['positions']
+
     elif channel in filter_set['protein_ligand']:
-        atom_positions = protein_dict['shifted_positions']
+        atom_positions = protein_dict['positions']
 
     elif channel in filter_set['other']: # backbone or sidechain
         if channel == 'backbone':
@@ -496,11 +520,12 @@ def find_channel_atoms(channel, protein_dict, filter_set):
             bool_backbone = bool_oxygen + bool_carbon + bool_alphacarbon + bool_nitrogen
 
             # select the backbone atoms
-            atom_positions = protein_dict['shifted_positions'][bool_backbone]
+            atom_positions = protein_dict['positions'][bool_backbone]
 
         else: # it was 'sidechain' filter, so grab sidechain atoms
             backbone_atom_set = np.array(['O', 'C', 'CA', 'N'])
-            sidechain_atom_set = np.array([atom for atom in protein_dict['atom_type_set']                                            if atom not in backbone_atom_set])
+            sidechain_atom_set = np.array([atom for atom in protein_dict['atom_type_set'] \
+                                           if atom not in backbone_atom_set])
 
             for index, sidechain_atom in enumerate(sidechain_atom_set):
                 if index == 0:
@@ -514,17 +539,20 @@ def find_channel_atoms(channel, protein_dict, filter_set):
                     bool_sidechains += bool_atom
 
             # grab all sidechain atom positions
-            atom_positions = protein_dict['shifted_positions'][bool_sidechains]
+            atom_positions = protein_dict['positions'][bool_sidechains]
 
     else: # it was a residue property channel
         acidic_residues = np.array(['ASP', 'GLU'])
         basic_residues = np.array(['LYS', 'ARG', 'HIS'])
         polar_residues = np.array(['GLN', 'ASN', 'HIS', 'SER', 'THR', 'TYR', 'CYS'])
-        nonpolar_residues = np.array(['GLY', 'ALA', 'VAL', 'LEU',                                         'ILE', 'MET', 'PRO', 'PHE', 'TRP'])
+        nonpolar_residues = np.array(['GLY', 'ALA', 'VAL', 'LEU', \
+                                        'ILE', 'MET', 'PRO', 'PHE', 'TRP'])
         amphipathic_residues = np.array(['TRP', 'TYR', 'MET'])
         charged_residues = np.array(['ARG', 'LYS', 'ASP', 'GLU'])
         # custom_residues = something
-        property_dict = {'acidic':acidic_residues, 'basic':basic_residues,                         'polar':polar_residues, 'nonpolar':nonpolar_residues,                         'amphipathic':amphipathic_residues, 'charged':charged_residues}
+        property_dict = {'acidic':acidic_residues, 'basic':basic_residues,\
+                         'polar':polar_residues, 'nonpolar':nonpolar_residues,\
+                         'amphipathic':amphipathic_residues, 'charged':charged_residues}
 
         atom_positions = atoms_from_residues(protein_dict, property_dict[channel])
 
@@ -550,6 +578,79 @@ def atoms_from_residues(protein_dict, residue_list):
     atom_positions = protein_dict['shifted_positions'][bool_residue]
 
     return atom_positions
+
+
+def make_voxel_grids(coords, feature, bin_size=1.0, num_bins=30.0):
+    """Convert atom coordinates and features represented as 2D arrays into a
+    fixed-sized 3D box.
+
+    Parameters
+    ----------
+    coords, features: array-likes, shape (N, 3) and (N, )
+        Arrays with coordinates and features for each atoms.
+    grid_resolution: float, optional
+        Resolution of a grid (in Angstroms).
+    max_dist: float, optional
+        Maximum distance between atom and box center. Resulting box has size of
+        bin_size * num_bins +1 Angstroms and atoms that are too far away are not
+        included.
+
+    Returns
+    -------
+    coords: np.ndarray, shape = (M, M, M, F)
+        4D array with atom properties distributed in 3D space. M is equal to
+        2 * `max_dist` / `grid_resolution` + 1
+    """
+
+    try:
+        coords = np.asarray(coords, dtype=np.float)
+    except ValueError:
+        raise ValueError('coords must be an array of floats of shape (N, 3)')
+    c_shape = coords.shape
+    if len(c_shape) != 2 or c_shape[1] != 3:
+        raise ValueError('coords must be an array of floats of shape (N, 3)')
+
+    N = len(coords)
+#     try:
+#         features = np.asarray(features, dtype=np.float)
+#     except ValueError:
+#         raise ValueError('features must be an array of floats of shape (N, F)')
+#     f_shape = features.shape
+#     if len(f_shape) != 2 or f_shape[0] != N:
+#         raise ValueError('features must be an array of floats of shape (N, F)')
+
+    if not isinstance(bin_size, (float, int)):
+        raise TypeError('bin_size must be float')
+    if bin_size <= 0:
+        raise ValueError('bin_size must be positive')
+
+    if not isinstance(num_bins, int):
+        raise TypeError('num_bins must be integer')
+    if num_bins <= 0:
+        raise ValueError('num_bins must be positive')
+
+    # num_features = f_shape[1]
+    num_bins = float(num_bins)
+    bin_size = float(bin_size)
+
+    box_size = ceil(num_bins * bin_size)
+#     print(box_size)
+
+    # move all atoms to the neares grid point
+    grid_coords = coords + bin_size * num_bins / 2.0
+    grid_coords = grid_coords.round().astype(int)
+    #print(grid_coords)
+    # remove atoms outside the box
+    in_box = ((grid_coords > 0) & (grid_coords < box_size)).all(axis=1)
+    #print(in_box)
+    voxel_grid = np.zeros((1, box_size, box_size, box_size),
+                    dtype=np.float32)
+    for (x, y, z), f in zip(grid_coords[in_box], feature[in_box]):
+        voxel_grid[0, x, y, z] += f
+    #print(np.count_nonzero(voxel_grid))
+
+    return voxel_grid
+
 
 def voxelize(path, channels=['CA'], path_type='file', ligand=False, bin_size=2.0, num_bins=50, save=False, save_fn='voxels.npy', save_path='./'):
     """
@@ -584,115 +685,44 @@ def voxelize(path, channels=['CA'], path_type='file', ligand=False, bin_size=2.0
         if ligand == True:
             protein_dict = pro_dict[0]
             ligand_dict = pro_dict[1]
+            ligand_heavy = ligand_dict['heavy_atom_positions']
+            ligand = ligand_dict['positions']
+            protein = protein_dict['positions']
+
+            x_ext = np.array([ligand[:,0].min(), ligand[:,0].max()])
+            y_ext = np.array([ligand[:,1].min(), ligand[:,1].max()])
+            z_ext = np.array([ligand[:,2].min(), ligand[:,2].max()])
+
+            midpoints = [np.sum(x_ext)/2, np.sum(y_ext)/2, np.sum(z_ext)/2]
+            ligand = ligand - midpoints
+            protein = protein - midpoints
+            ligand_heavy = ligand_heavy - midpoints
+
+            ET = EllipsoidTool()
+            (center, radii, rotation) = ET.getMinVolEllipse(ligand_heavy, .01)
+
+            ligand_heavy = np.dot(ligand_heavy, np.transpose(rotation))
+            protein, ligand, ligand_heavy = ET.rotate_position(ligand_heavy, ligand, protein,
+                                                          center, np.transpose(rotation))
+
+            (center, radii, rotation) = ET.getMinVolEllipse(ligand_heavy, .01)
+
+            rotation = np.array([[0.707, 0, 0.707],
+                                    [0.5, 0.707, -0.5],
+                                    [-0.5, 0.707, 0.5]])
+            protein, ligand, ligand_heavy = ET.rotate_position(ligand_heavy, ligand, protein,
+                                              center, np.transpose(rotation))
+
+            (center, radii, rotation) = ET.getMinVolEllipse(ligand_heavy, .01)
+
+            ligand_dict['positions'] = ligand
+            protein_dict['positions'] = protein
+
             return make_fields(protein_dict, channels=channels, bin_size=bin_size, num_bins=num_bins, ligand=True, ligand_dict=ligand_dict)
         else:
             protein_dict = pro_dict
             sys.stdout.write('done')
             return make_fields(protein_dict, channels=channels, bin_size=bin_size, num_bins=num_bins)
 
-    # ------------FOLDER FUNCTIONALITY INCOMPLETE---------------
-    elif path_type == 'folder':
-        fields = []
-        pdb_fns = os.listdir(path)
-        for j, fn in enumerate(pdb_fns):
-            progress = '{}/{} pdbs voxelized ({}%)'.format(j, len(pdb_fns),                         round(j / len(pdb_fns) * 100, 2))
-            sys.stdout.write('\r'+progress)
-            protein_dict = load_input(os.path.join(path, fn))
-            field, bins = make_fields(protein_dict, channels=channels, bin_size=bin_size, num_bins=num_bins)
-            channel_list = []
-            for channel in channels:
-                channel_list.append(field[channel].reshape(1,
-                                                           bins,
-                                                           bins,
-                                                           bins))
-            field = np.concatenate(channel_list).reshape(1,len(channels),
-                                                         bins, bins, bins)
-            fields.append(field)
-        sys.stdout.write("\r\033[K")
-        out_statement = 'voxelization complete!\n'
-        sys.stdout.write('\r'+out_statement)
-        fields = np.concatenate(fields)
 
-        if save:
-            np.save(os.path.join(save_path, save_fn), fields)
-        else:
-            return fields
-
-
-# In[9]:
-
-
-# In[10]:
-
-
-channel_list = ['all_C', 'all_O', 'all_N', 'acidic', 'basic', 'polar', 'nonpolar',\
-                 'charged', 'amphipathic','hydrophobic', 'aromatic', 'acceptor', 'donor',\
-                 'ring', 'hyb', 'heavyvalence', 'heterovalence', 'partialcharge','protein', 'ligand']
-
-#channel_list = ['all_O', 'all_C', 'acceptor']
-#other_filters = np.array(['backbone', 'sidechains'])
-#voxel = voxelize(file_name, channels=channel_list, bin_size=2.0,num_bins=50, ligand=True)
-
-
-# In[ ]:
-
-
-@click.command()
-@click.option('--input_dir', help='input directory to search for pocket.mol2 files')
-@click.option('--output_dir', help='output directory to save the computed data')
-@click.option('--affinity_data', default=None, help='output directory to save the computed data')
-
-
-# In[41]:
-
-
-#input_dir = '/Users/prguser/Documents/PDBbind/test-set/'
-#output_dir = '/Users/prguser/Documents/PDBbind/test_output/'
-#subdir_name = os.listdir(input_dir)
-
-def run(input_dir, output_dir, affinity_data):
-    subdir_name = os.listdir(input_dir)
-    start_tot = timer() 
-    create_ds_args = {'compression': "lzf",
-                  'shuffle': True,
-                  'fletcher32': True}
-    if affinity_data:
-        affinity = pd.read_csv(affinity_data)
-    #print(input_dir)
-    for j, dirname in enumerate(subdir_name):
-        start = timer()
-        torch.cuda.empty_cache() 
-        if j % 10 == 0:
-            progress = '{}/{} structures voxelized ({}%)'.format(j, len(subdir_name), \
-                        round(j / len(subdir_name) * 100, 2))
-            print('\r'+progress)
-            #sys.stdout.write('\r'+progress)
-        input_filename = input_dir + dirname + '/' + dirname + '_pocket.mol2'
-        output_filename = os.path.join(output_dir, dirname + '.h5') 
-        if not os.path.isfile(output_filename):
-            #print(output_filename)
-            voxel = voxelize(input_filename, channels=channel_list, bin_size=2.0,num_bins=50, ligand=True)
-            #print(voxel)
-            if affinity_data:
-                if dirname in affinity.values:
-                    affinity_value = affinity.loc[affinity['pdbid'] == dirname, '-logKd/Ki'].iloc[0]
-                    voxel['affinity'] = affinity_value
-                else:
-                    voxel['affinity'] = NULL
-            else:
-                continue
-            dicttoh5(voxel, dirname + ".h5", h5path='/', overwrite_data=True,
-                     create_dataset_args=create_ds_args)
-            shutil.move(dirname + '.h5', output_dir)
-        else:
-            continue
-        end = timer()
-        #print(end - start)
-    
-    end_tot = timer()
-    print(end_tot - start_tot)
-    return
-
-if __name__ == '__main__':
-    run()
 
