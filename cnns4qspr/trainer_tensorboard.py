@@ -24,6 +24,61 @@ from torch.utils.data.sampler import SubsetRandomSampler
 from bisect import bisect
 import os, psutil # used to monitor memory usage
 import fnmatch
+from torch.utils.tensorboard import SummaryWriter
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+writer = SummaryWriter('runs')
+import datetime
+
+
+def plot_grad_flow(epoch_number, batch_number, named_parameters):
+    '''Plots the gradients flowing through different layers in the net during training.
+    Can be used for checking for possible gradient vanishing / exploding problems.
+
+    Usage: Plug this function in Trainer class after loss.backwards() as
+    "plot_grad_flow(self.model.named_parameters())" to visualize the gradient flow'''
+#    ave_grads = []
+#    layers = []
+#    for n, p in named_parameters:
+#        if(p.requires_grad) and ("bias" not in n):
+#            layers.append(n)
+#            ave_grads.append(p.grad.abs().mean())
+#    layers = np.array(layers)
+#    ave_grads = np.array(ave_grads)
+#    print(layers)
+#    plt.plot(ave_grads, alpha=0.3, color="b")
+#    plt.hlines(0, 0, len(ave_grads)+1, linewidth=1, color="k" )
+#    plt.xticks(range(0,len(ave_grads), 1), layers, rotation="vertical")
+#    plt.xlim(xmin=0, xmax=len(ave_grads))
+#    plt.xlabel("Layers")
+#    plt.ylabel("average gradient")
+#    plt.title("Gradient flow")
+#    plt.grid(True)
+#    plt.tight_layout()
+    ave_grads = []
+    max_grads= []
+    layers = []
+    for n, p in named_parameters:
+        if(p.requires_grad) and ("bias" not in n):
+            layers.append(n)
+            ave_grads.append(p.grad.abs().mean())
+            max_grads.append(p.grad.abs().max())
+    plt.bar(np.arange(len(max_grads)), max_grads, alpha=0.1, lw=1, color="b")
+    plt.bar(np.arange(len(max_grads)), ave_grads, alpha=0.2, lw=1, color="g")
+    plt.hlines(0, 0, len(ave_grads)+1, lw=2, color="k" )
+    plt.xticks(range(0,len(ave_grads), 1), [n[:18] for n in layers], rotation="vertical")
+    plt.xlim(left=0, right=len(ave_grads))
+    plt.xlabel("Layers")
+    plt.ylabel("average gradient")
+    plt.title("Gradient flow, epoch={}, batch={}".format(epoch_number, batch_number))
+    plt.grid(True)
+    plt.legend([Line2D([0], [0], color="b", lw=4),
+                Line2D([0], [0], color="g", lw=4),
+                Line2D([0], [0], color="k", lw=4)], ['max-gradient', 'ave-gradient', 'zero-gradient'])
+    plt.tight_layout()
+    dt = str(datetime.datetime.now())
+    plt.savefig("_".join(["figs/", str(dt) ,"gradient_flow.png"]))
+    #plt.savefig("_".join(["figs/","epoch",str(epoch_number),"batch",str(batch_number) ,"gradient_flow.png"]))
 
 
 class BigDataset(torch.utils.data.Dataset):
@@ -590,6 +645,7 @@ class CNNTrainer():
         self.best_acc = 0
         self.best_loss = np.inf
         self.loaded = False
+        self.grad_figs = self.args.grad_figs
 
     def build_predictor(self,
                         predictor_class,
@@ -670,51 +726,12 @@ class CNNTrainer():
         self.blocks = [block for block in self.network.blocks if block is not None]
         self.blocks.append(self.predictor)
         self.network.blocks = nn.Sequential(*[block for block in self.blocks if block is not None])
-        #print(self.network)      
-        #print(self.network.load_state_dict(self.current_state['state_dict']))
+
         self.history = self.current_state['history']
         self.n_epochs = self.current_state['epoch']
         self.best_acc = self.current_state['best_acc']
         self.best_loss = self.current_state['best_loss']
         self.loaded = True
-
-    def load_data(self,
-                  file_path,
-                  verbose=True):
-        
-        get_file_names = []
-        #dir_name = os.path.join(file_path, 'data')
-        for file_name in os.listdir(file_path):
-    	    if fnmatch.fnmatch(file_name, 'feature*'):
-                get_file_names.append(file_name)
-        num_files = len(get_file_names)
-        #print(file_path, num_files)
-        #target_paths = [f's{index}.npy' for index in range(10)]
-        
-        data_paths = [os.path.join(file_path, f'feature{index}.npy')
-                      for index in range(num_files)]
-        #data_paths = [os.path.join(file_path, f'data/feature{index}.npy') 
-        #              for index in range(1)]
-        #print(data_paths)
-        #dataset = BigDataset(data_paths, target_paths)
-        dataset_loaded = BigDataset(data_paths)
-        if verbose:
-            print('data loaded')
-        return dataset_loaded
-
-    def count_parameters(self):
- 
-         
-        if self.loaded:
-            self.network.load_state_dict(self.current_state['state_dict'])
-  
-
-        model_parameters = filter(lambda p: p.requires_grad, self.network.parameters())
-        params = sum(p.numel() for p in self.network.parameters() if p.requires_grad)
-        #params = sum([np.prod(p.size()) for p in model_parameters])
-        print('total parameters in the model = {}'.format(params))
-        for p in self.network.parameters():
-            print(p.size())
 
     def train(self,
               #data,
@@ -741,7 +758,24 @@ class CNNTrainer():
             store_criterion = 'val_loss'
 
         ### Load data and format for training
-        dataset = self.load_data(file_path)
+        get_file_names = []
+        #dir_name = os.path.join(file_path, 'data')
+        for file_name in os.listdir(file_path):
+    	    if fnmatch.fnmatch(file_name, 'feature*'):
+                get_file_names.append(file_name)
+        num_files = len(get_file_names)
+        #print(file_path, num_files)
+        #target_paths = [f's{index}.npy' for index in range(10)]
+        
+        data_paths = [os.path.join(file_path, f'feature{index}.npy')
+                      for index in range(num_files)]
+        #data_paths = [os.path.join(file_path, f'feature{index}.npy')
+        #              for index in range(1)]
+        #print(data_paths)
+        #dataset = BigDataset(data_paths, target_paths)
+        dataset = BigDataset(data_paths)
+
+
         dataset_size = len(dataset)
         print("Dataset size:", dataset_size, flush=True)
         #data = np.load(file_name, mmap_mode = 'r')['arr_0']
@@ -762,7 +796,10 @@ class CNNTrainer():
         val_indices = np.array(list(set(np.arange(self.n_samples, dtype=np.int64)) - set(train_indices)))
         #train_data = CustomIterableDataset(data[train_indices, :])
         #dataset = CustomIterableDataset(data)
-        
+        with open ("train_indices.txt", 'w') as train_file:
+            for item in train_indices:
+                train_file.write("%s\n" %item)
+         
         train_sampler = SubsetRandomSampler(train_indices)
         val_sampler = SubsetRandomSampler(val_indices)
         train_loader = torch.utils.data.DataLoader(dataset, batch_size=self.args.batch_size,
@@ -772,6 +809,10 @@ class CNNTrainer():
                                                  num_workers=5, sampler=val_sampler,
                                                  pin_memory=True)
 
+
+        examples = iter(train_loader)
+        example_data = examples.next() 
+        #writer.add_graph(self.network, example_data[1][:,:,:,:,:,0])
         if verbose:
             sys.stdout.write('\r'+'val Data deleted...\n')
             sys.stdout.flush()
@@ -792,14 +833,15 @@ class CNNTrainer():
         self.param_groups = get_param_groups(self.network, self.args)
         self.optimizer = Adam(self.param_groups, lr=self.args.initial_lr)
         self.optimizer.zero_grad()
-
+        layers = []
         if self.loaded:
             self.network.load_state_dict(self.current_state['state_dict'])
             self.optimizer.load_state_dict(self.current_state['optimizer'])
-
+        print(self.network)
         if verbose:
             sys.stdout.write('\r'+'Network built...\n')
         fi = open("training.txt", "a")
+        
         ### Train
         for epoch in range(epochs):
             self.optimizer, _ = lr_scheduler_exponential(self.optimizer,
@@ -846,7 +888,7 @@ class CNNTrainer():
                     predictions = self.network(x)
                     pred_l = predictor_loss(y, predictions)
                     vae_l = torch.Tensor([np.nan])
-                    loss = pred_l
+                    loss = torch.sqrt(pred_l)
                 elif self.args.predictor == 'vae':
                     vae_out, mu, logvar, predictions = self.network(x)
                     vae_in = torch.autograd.Variable(cnn_out)
@@ -854,9 +896,12 @@ class CNNTrainer():
                     vae_l = vae_loss(vae_in, vae_out, mu, logvar)
                     loss = vae_l + pred_l
 
-                loss.backward()
-                self.optimizer.step()
                 self.optimizer.zero_grad()
+                loss.backward()
+                if batch_idx % 100 == 0 and self.grad_figs:
+                    plot_grad_flow(epoch, batch_idx, self.network.named_parameters())
+                self.optimizer.step()
+                #self.optimizer.zero_grad()
 
                 _, argmax = torch.max(predictions, 1)
                 acc = (argmax.squeeze() == targets).float().mean()
@@ -880,7 +925,7 @@ class CNNTrainer():
             self.history['train_vae_loss'].append(np.mean(train_vae_losses))
             self.history['train_acc'].append(np.mean(train_accs))
             self.n_epochs += 1
-
+            writer.add_scalar('training loss', np.mean(train_total_losses), epoch)
             ### Validation Loop
             self.network.eval()
             val_total_losses = []
@@ -905,7 +950,7 @@ class CNNTrainer():
                     predictions = self.network(x)
                     pred_l = predictor_loss(y, predictions)
                     vae_l = torch.Tensor([np.nan])
-                    loss = pred_l
+                    loss = torch.sqrt(pred_l)
                 elif self.args.predictor == 'vae':
                     vae_out, mu, logvar, predictions = self.network(x)
                     vae_in = torch.autograd.Variable(cnn_out)
@@ -935,6 +980,7 @@ class CNNTrainer():
             self.history['val_predictor_loss'].append(np.mean(val_predictor_losses))
             self.history['val_vae_loss'].append(np.mean(val_vae_losses))
             self.history['val_acc'].append(np.mean(val_accs))
+            writer.add_scalar('Validation loss', np.mean(val_total_losses), epoch)
             fi.write("%i, %5.2f, %5.2f, %5.2f, %5.2f, %5.2f, %5.2f\n" %(epoch, np.mean(train_total_losses), np.mean(train_predictor_losses), np.mean(train_accs),
                  np.mean(val_total_losses), np.mean(val_predictor_losses), np.mean(val_accs)))
             fi.flush()
@@ -967,116 +1013,6 @@ class CNNTrainer():
                         pass
                     if save_best:
                         self.save(mode='best', save_fn=save_fn, save_path=save_path)
-
-
-
-    def predict(self, file_path,
-                 train_indices_file=None):
-
-        if self.loaded:
-            self.network.load_state_dict(self.current_state['state_dict'])
-            #self.optimizer.load_state_dict(self.current_state['optimizer'])
-        
-#        get_file_names = []
-#        for file_name in os.listdir(file_path):
-#            if fnmatch.fnmatch(file_name, 'feature*'):
-#                get_file_names.append(file_name)
-#        num_files = len(get_file_names)
-#
-#        data_paths = [os.path.join(file_path, f'feature{index}.npy')
-#                      for index in range(num_files)]
-#        dataset = BigDataset(data_paths)
-        dataset = self.load_data(file_path)
-        n_samples = len(dataset)
-        
-        all_indices = np.arange(n_samples)
-        if train_indices_file is not None:
-            train_indices = np.sort(np.loadtxt(train_indices_file).astype(int))
-            val_indices = np.array(list(set(np.arange(n_samples, dtype=np.int64)) - set(train_indices)))
-            
-            train_dataset = torch.utils.data.Subset(dataset, train_indices)
-            val_dataset = torch.utils.data.Subset(dataset, val_indices)
-
-
-            train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=self.args.batch_size,
-                                                   num_workers=1, shuffle=False, 
-                                                   pin_memory=True)
-        
-
-            tar, pred = self.predict_dataset(train_loader)
-            self.write_result('train.txt', tar, pred)
-
-            
-            val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=self.args.batch_size,
-                                                   num_workers=1, shuffle=False, 
-                                                   pin_memory=True)
-        
-
-            tar, pred = self.predict_dataset(val_loader)
-            self.write_result('validation.txt', tar, pred)
-
-        else:
-            test_loader = torch.utils.data.DataLoader(dataset, batch_size=self.args.batch_size,
-                                                   num_workers=1, shuffle=False,
-                                                   pin_memory=True)
-        
-
-            tar, pred = self.predict_dataset(test_loader)
-            #print(tar, pred)
-            self.write_result('test.txt', tar, pred)
-
-    def predict_dataset(self,
-                        dataloader):
-
-        use_gpu = torch.cuda.is_available()
-        if use_gpu:
-            self.network.cuda()
-        self.network.eval()
-        targets_all = []
-        predictions_all = []
-        batch_time = AverageMeter('Time', ':6.3f')
-        data_time = AverageMeter('Data', ':6.3f')
-        progress = ProgressMeter(len(dataloader),
-                [batch_time, data_time])
-        end = time.time()
-        for batch_idx, data in enumerate(dataloader):
-            data_time.update(time.time() - end) 
-            print("predict %s\n" % (batch_idx), flush=True)
-            if use_gpu:
-                data = data[1].cuda()
-            inputs = data[:,:,:,:,:,0]
-            targets = data[:,0,0,0,0,0]
-
-            x = torch.autograd.Variable(inputs)
-            y = torch.autograd.Variable(targets)
-
-           #evaluate
-            if self.args.predictor == 'feedforward':
-                predictions = self.network(x)
-            elif self.args.predictor == 'vae':
-                pass
-            batch_time.update(time.time() - end)
-            end = time.time()
-            progress.display(batch_idx)
-            predictions = predictions.data.cpu().numpy().flatten()
-            targets = targets.data.cpu().numpy().flatten()
-            targets_all.append(targets)
-            predictions_all.append(predictions)
-            #if batch_idx > 5:
-            #    break
-        return targets_all, predictions_all
-
-    def write_result(self, file_name, target, predict):
-   
-        target = np.hstack(np.array(target, dtype=object).flatten())
-        predict = np.hstack(np.array(predict, dtype=object).flatten())
-        #target = np.concatenate(np.array(target, dtype=object).flatten(), axis = 0)
-        #predict = np.concatenate(np.array(predict, dtype=object).flatten(), axis=0) 
-        with open(file_name, 'w') as f:
-            for i in range(len(target)):
-                s1 = str(target[i]) + '\t' + str(predict[i]) + '\n'
-                f.write(s1)
-        f.close()
 
 
 class ProgressMeter(object):
